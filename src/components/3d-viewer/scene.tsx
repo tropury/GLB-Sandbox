@@ -97,11 +97,14 @@ function SofaModel() {
     // Store global reference for AR export
     loadedGltfScene = gltf.scene;
 
-    // Collect all material names used by the sofa upholstery
-    const upholsteryNames = new Set<string>();
+    // Collect ALL target material names (textured + solid-color)
+    const allTargetNames = new Set<string>();
     materialGroups.forEach((group) => {
       group.options.forEach((opt) => {
-        opt.targetMaterials.forEach((name) => upholsteryNames.add(name));
+        opt.targetMaterials.forEach((name) => allTargetNames.add(name));
+        if (opt.solidColorTargets) {
+          opt.solidColorTargets.forEach((name) => allTargetNames.add(name));
+        }
       });
     });
 
@@ -116,7 +119,7 @@ function SofaModel() {
         if (mat && mat.name) {
           materialNames.push(mat.name);
 
-          if (upholsteryNames.has(mat.name)) {
+          if (allTargetNames.has(mat.name)) {
             meshMaterialsRef.current.set(mat.name, {
               mesh,
               originalMaterial: mat,
@@ -183,7 +186,7 @@ function SofaModel() {
     });
   }, [gltf, setLoaded]);
 
-  // Step 2: When user selects a material, create a NEW material with normal map and assign it
+  // Step 2: When user selects a material, create NEW materials and assign them
   useEffect(() => {
     const entries = Object.entries(selectedMaterials);
     if (entries.length === 0) return;
@@ -191,6 +194,7 @@ function SofaModel() {
     entries.forEach(([, option]) => {
       if (!option) return;
 
+      // ── Textured material (for meshes WITH UVs) ──
       const texture = textureCache.current.get(option.texture);
       if (!texture) {
         console.warn(
@@ -199,16 +203,29 @@ function SofaModel() {
         return;
       }
 
+      // Clone texture so we can set repeat independently per option
+      const texClone = texture.clone();
+      texClone.needsUpdate = true;
+      // Apply repeat — scales UV coordinates to control tiling density
+      // e.g. repeat=0.25 with UV range 12 → effective range 3 → 3 tiles
+      const rx = option.repeatX ?? 1;
+      const ry = option.repeatY ?? 1;
+      texClone.repeat.set(rx, ry);
+
       // Load normal map texture if available
       let normalTexture: THREE.Texture | null = null;
       if (option.normalMap) {
-        normalTexture = textureCache.current.get(option.normalMap) || null;
+        const nt = textureCache.current.get(option.normalMap);
+        if (nt) {
+          normalTexture = nt.clone();
+          normalTexture.repeat.set(rx, ry);
+          normalTexture.needsUpdate = true;
+        }
       }
 
-      // Create a fresh material — avoids issues with baked textures,
-      // near-black colors, alpha blending, etc.
+      // Create a fresh textured material
       const newMaterial = new THREE.MeshStandardMaterial({
-        map: texture,
+        map: texClone,
         color: 0xffffff,
         normalMap: normalTexture,
         normalScale: new THREE.Vector2(
@@ -223,19 +240,59 @@ function SofaModel() {
         side: THREE.DoubleSide,
       });
 
-      // Apply the new material to ALL upholstery meshes
-      let appliedCount = 0;
+      // Apply textured material to meshes WITH UVs
+      let texturedCount = 0;
       option.targetMaterials.forEach((matName) => {
         const entry = meshMaterialsRef.current.get(matName);
         if (entry) {
-          entry.mesh.material = newMaterial;
-          appliedCount++;
+          const mesh = entry.mesh as THREE.Mesh;
+          const hasUVs = mesh.geometry.getAttribute("uv") !== undefined;
+          if (hasUVs) {
+            mesh.material = newMaterial;
+            texturedCount++;
+          } else {
+            // Fallback: apply solid color if mesh unexpectedly has no UVs
+            console.warn(
+              `[SofaModel] Mesh "${matName}" has no UVs — applying solid color fallback`
+            );
+            const solidMat = new THREE.MeshStandardMaterial({
+              color: option.solidColor
+                ? parseInt(option.solidColor, 16)
+                : 0xcccccc,
+              roughness: option.roughness,
+              metalness: option.metalness,
+              side: THREE.DoubleSide,
+            });
+            mesh.material = solidMat;
+          }
         }
       });
 
+      // ── Solid color material (for meshes WITHOUT UVs, e.g. stitching) ──
+      let solidCount = 0;
+      if (option.solidColorTargets && option.solidColorTargets.length > 0) {
+        const solidMaterial = new THREE.MeshStandardMaterial({
+          color: option.solidColor
+            ? parseInt(option.solidColor, 16)
+            : 0xcccccc,
+          roughness: option.roughness,
+          metalness: option.metalness,
+          side: THREE.DoubleSide,
+        });
+
+        option.solidColorTargets.forEach((matName) => {
+          const entry = meshMaterialsRef.current.get(matName);
+          if (entry) {
+            entry.mesh.material = solidMaterial;
+            solidCount++;
+          }
+        });
+      }
+
       console.log(
-        `[SofaModel] ✅ Applied "${option.name}" to ${appliedCount}/${option.targetMaterials.length} meshes` +
-          (normalTexture ? " (with normal map)" : "")
+        `[SofaModel] ✅ Applied "${option.name}": ${texturedCount} textured + ${solidCount} solid-color meshes` +
+          (normalTexture ? " (with normal map)" : "") +
+          ` | repeat=(${rx}, ${ry})`
       );
     });
   }, [selectedMaterials]);
@@ -471,6 +528,8 @@ async function startAndroidAR(
     const currentMaterials = useViewerStore.getState().selectedMaterials;
     Object.entries(currentMaterials).forEach(([, option]) => {
       if (!option) return;
+
+      // Textured material for meshes with UVs
       const newMat = new THREE.MeshStandardMaterial({
         map: null,
         color: 0xffffff,
@@ -484,16 +543,54 @@ async function startAndroidAR(
         tex.wrapT = THREE.RepeatWrapping;
         tex.flipY = false;
         tex.colorSpace = THREE.SRGBColorSpace;
+        // Apply same repeat as main viewer
+        const rx = option.repeatX ?? 1;
+        const ry = option.repeatY ?? 1;
+        tex.repeat.set(rx, ry);
         newMat.map = tex;
         newMat.needsUpdate = true;
       });
+
+      // Apply textured material to target meshes that have UVs
       option.targetMaterials.forEach((matName) => {
         sofa.traverse((child: any) => {
           if (child.isMesh && child.material?.name === matName) {
-            child.material = newMat;
+            const hasUVs = child.geometry.getAttribute("uv") !== undefined;
+            if (hasUVs) {
+              child.material = newMat;
+            } else {
+              // Fallback solid color for meshes without UVs
+              child.material = new THREE.MeshStandardMaterial({
+                color: option.solidColor
+                  ? parseInt(option.solidColor, 16)
+                  : 0xcccccc,
+                roughness: option.roughness,
+                metalness: option.metalness,
+                side: THREE.DoubleSide,
+              });
+            }
           }
         });
       });
+
+      // Apply solid color to meshes without UVs
+      if (option.solidColorTargets && option.solidColorTargets.length > 0) {
+        const solidMat = new THREE.MeshStandardMaterial({
+          color: option.solidColor
+            ? parseInt(option.solidColor, 16)
+            : 0xcccccc,
+          roughness: option.roughness,
+          metalness: option.metalness,
+          side: THREE.DoubleSide,
+        });
+        option.solidColorTargets.forEach((matName) => {
+          sofa.traverse((child: any) => {
+            if (child.isMesh && child.material?.name === matName) {
+              child.material = solidMat;
+            }
+          });
+        });
+      }
     });
 
     const reticleGeom = new THREE.RingGeometry(0.1, 0.12, 32);
