@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Yes, the 3D chair viewer is in dark mode (the background is dark).  \n2) The chair upholstery is light gray (a textured, light gray fabric).  \n3) The legs are made of a metallic material (appearing silver/chrome).  \n4) There are no obvious visual issues; the chair and interface render clearly, with functional controls (e.g., \"Arrastar,\" \"Zoom,\" \"Rotacionar\") and color/material selection options visible.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1781114212,
+  "id": "20260611015649f8775caac47d4b89",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "20260611015649f8775caac47d4b89",
+  "usage": {
+    "completion_tokens": 102,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1021,
+    "prompt_tokens_details": {
+      "cached_tokens": 6
+    },
+    "total_tokens": 1123
+  }
+}

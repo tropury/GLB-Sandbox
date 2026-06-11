@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Yes, the page is in dark mode (background is dark gray/black).  \n2) No, the chair upholstery is a light, textured fabric (not brown/leather).  \n3) Yes, the material thumbnails (under \"Estofado\" and \"Cadeira\") are visible, and controls like \"Arrastar,\" \"Zoom,\" \"Rotacionar\" appear functional.  \n4) No layout or rendering issues are apparent; the chair, controls, and thumbnails display clearly.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1781114040,
+  "id": "20260611015358aef45f63eb5245eb",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "20260611015358aef45f63eb5245eb",
+  "usage": {
+    "completion_tokens": 105,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1030,
+    "prompt_tokens_details": {
+      "cached_tokens": 6
+    },
+    "total_tokens": 1135
+  }
+}

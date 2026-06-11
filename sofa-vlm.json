@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "The 3D viewer page displays a **beige/cream-colored sofa model** with a modern, modular design (multiple connected sections, plush cushions, and a clean, contemporary silhouette).  \n\n### Key Elements:  \n- **Sofa Visibility**: Yes, the sofa is clearly visible and centered in the viewer.  \n- **Material Swap Controls**: Yes, they are visible at the bottom of the page. Two sections (“Estofado” for upholstery and “Estrutura” for structure) show color/material swatches (e.g., dark gray, blue, brown, beige, green, maroon for upholstery; metallic, black, gold, brown, textured for structure) to customize the sofa’s appearance.  \n- **Light/Dark Mode**: The page is in **light mode** (white/light gray background, dark text/icons).  \n- **Issues**: No obvious issues—controls are functional-looking, and the sofa renders clearly.  \n\n\nThe interface includes interaction controls (e.g., “Arrastar”/drag, “Zoom”, “Rotacionar”/rotate) on the right, and a compass icon (“N”) on the bottom left for orientation.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1781116025,
+  "id": "20260611022702f2780bc95dfc4e1e",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "20260611022702f2780bc95dfc4e1e",
+  "usage": {
+    "completion_tokens": 239,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1016,
+    "prompt_tokens_details": {
+      "cached_tokens": 6
+    },
+    "total_tokens": 1255
+  }
+}

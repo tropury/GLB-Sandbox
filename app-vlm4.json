@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "The 3D chair viewer displays a chair with a **light pink (or blush) textured fabric upholstery** (appearing as a woven or knitted material) and **light-colored (cream or pale wood-toned) legs**.  \n\nCompared to the original description of “blue fabric and dark legs,” the upholstery color/material has changed (from blue fabric to light pink textured fabric), and the legs’ color/material has also changed (from dark to light-colored).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1781114084,
+  "id": "202606110154423f5d6abdcb82425c",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "202606110154423f5d6abdcb82425c",
+  "usage": {
+    "completion_tokens": 96,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1014,
+    "prompt_tokens_details": {
+      "cached_tokens": 6
+    },
+    "total_tokens": 1110
+  }
+}
