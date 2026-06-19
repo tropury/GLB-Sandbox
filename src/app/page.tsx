@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import dynamic from "next/dynamic";
 import MaterialToolbar from "@/components/3d-viewer/toolbar";
 import HelpPanel from "@/components/3d-viewer/help-panel";
+import ARBadge from "@/components/3d-viewer/ar-badge";
 import { useViewerStore } from "@/components/3d-viewer/store";
 
 const Scene = dynamic(() => import("@/components/3d-viewer/scene"), {
@@ -63,6 +64,9 @@ export default function Home() {
 
       {/* Material toolbar */}
       <MaterialToolbar />
+
+      {/* AR compatibility badge (hidden on desktop) */}
+      <ARBadge />
 
       {/* Brand */}
       <div

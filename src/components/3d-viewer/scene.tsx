@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback, Suspense } from "react";
+import { useRef, useEffect, useState, Suspense } from "react";
 import { Canvas, useLoader, useThree } from "@react-three/fiber";
 import {
   OrbitControls,
@@ -12,45 +12,41 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import { USDZExporter } from "three/examples/jsm/exporters/USDZExporter.js";
 import { useViewerStore } from "./store";
 import { materialGroups } from "./materials";
 
-// Configure Draco loader (for Draco-compressed GLBs)
+// ─── Lazy Loader Configuration ───
+// Draco decoder for Draco-compressed GLBs (CDN-loaded, cached)
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.7/"
 );
 dracoLoader.setDecoderConfig({ type: "js" });
 
-// Configure GLTFLoader with both Draco AND Meshopt support
+// GLTFLoader with Draco + Meshopt support (covers all compression types)
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
-// ─── Platform Detection ───
-function isIOS(): boolean {
-  if (typeof window === "undefined") return false;
-  return (
-    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
-}
-
-function isMobile(): boolean {
-  if (typeof window === "undefined") return false;
-  return (
-    /Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(
-      navigator.userAgent
-    ) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
-}
-
-// ─── Global reference to the loaded GLTF scene ───
+// ─── Global reference to the loaded GLTF scene (for AR export + WebXR fallback) ───
+// This scene has the CURRENTLY SWAPPED materials applied to its meshes.
+// AR export (USDZ for iOS, GLB for Android) reads from this reference to
+// ensure the last applied texture persists in AR mode.
 let loadedGltfScene: THREE.Group | null = null;
+let loadedGltfMaterials: Map<string, THREE.Material> = new Map();
 
-// ─── Loader Component ───
+/**
+ * Get the current Three.js scene with the last applied texture/materials.
+ * Used by AR export (USDZ for iOS, GLB for Android) so that the texture
+ * the user selected in the web viewer is preserved in AR mode.
+ *
+ * @returns The live scene object (do NOT modify — clone before exporting)
+ */
+export function getLoadedScene(): THREE.Group | null {
+  return loadedGltfScene;
+}
+
+// ─── Loader Component (Lazy Loading progress indicator) ───
 function Loader() {
   const { progress, active } = useProgress();
   if (!active && progress >= 100) return null;
@@ -71,8 +67,9 @@ function Loader() {
   );
 }
 
-// ─── Sofa Model ───
+// ─── Sofa Model (Lazy Loaded via React Suspense) ───
 function SofaModel() {
+  // useLoader is lazy — only loads when the component mounts
   const gltf = useLoader(
     GLTFLoader,
     "/sofa.glb",
@@ -88,13 +85,12 @@ function SofaModel() {
   const meshMaterialsRef = useRef<
     Map<string, { mesh: THREE.Mesh; originalMaterial: THREE.Material }>
   >(new Map());
-  const textureCache = useRef<Map<string, THREE.Texture>>(new Map());
 
   // Step 1: Extract mesh-material pairs and preload ALL textures (color + normal)
   useEffect(() => {
     if (!gltf.scene) return;
 
-    // Store global reference for AR export
+    // Store global reference for WebXR AR fallback
     loadedGltfScene = gltf.scene;
 
     // Collect ALL target material names (textured + solid-color)
@@ -124,66 +120,15 @@ function SofaModel() {
               mesh,
               originalMaterial: mat,
             });
+            // Store original material globally for WebXR AR
+            loadedGltfMaterials.set(mat.name, mat);
           }
         }
       }
     });
 
     console.log("[SofaModel] All materials found:", materialNames);
-
-    // Preload ALL textures: color maps + normal maps
-    const loader = new THREE.TextureLoader();
-    const allTexturePaths = new Set<string>();
-    materialGroups.forEach((group) => {
-      group.options.forEach((opt) => {
-        allTexturePaths.add(opt.texture);
-        if (opt.normalMap) {
-          allTexturePaths.add(opt.normalMap);
-        }
-      });
-    });
-
-    let loadedCount = 0;
-    const totalTextures = allTexturePaths.size;
-
-    if (totalTextures === 0) {
-      setLoaded(true);
-      return;
-    }
-
-    allTexturePaths.forEach((path) => {
-      loader.load(
-        path,
-        (tex) => {
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.RepeatWrapping;
-          tex.flipY = false;
-
-          // Normal maps use LinearSRGBColorSpace (no sRGB gamma)
-          // Color/diffuse maps use SRGBColorSpace
-          if (path.toLowerCase().includes("normal")) {
-            tex.colorSpace = THREE.LinearSRGBColorSpace;
-          } else {
-            tex.colorSpace = THREE.SRGBColorSpace;
-          }
-
-          textureCache.current.set(path, tex);
-          loadedCount++;
-          if (loadedCount === totalTextures) {
-            console.log("[SofaModel] ✅ All textures preloaded");
-            setLoaded(true);
-          }
-        },
-        undefined,
-        (err) => {
-          console.error(`[SofaModel] Texture preload failed: ${path}`, err);
-          loadedCount++;
-          if (loadedCount === totalTextures) {
-            setLoaded(true);
-          }
-        }
-      );
-    });
+    setLoaded(true);
   }, [gltf, setLoaded]);
 
   // Step 2: When user selects a material, create NEW materials and assign them
@@ -194,40 +139,18 @@ function SofaModel() {
     entries.forEach(([, option]) => {
       if (!option) return;
 
-      // ── Textured material (for meshes WITH UVs) ──
-      const texture = textureCache.current.get(option.texture);
-      if (!texture) {
-        console.warn(
-          `[SofaModel] Texture "${option.texture}" not preloaded yet`
-        );
-        return;
-      }
-
-      // Clone texture so we can set repeat independently per option
-      const texClone = texture.clone();
-      texClone.needsUpdate = true;
-      // Apply repeat — scales UV coordinates to control tiling density
-      // e.g. repeat=0.25 with UV range 12 → effective range 3 → 3 tiles
       const rx = option.repeatX ?? 1;
       const ry = option.repeatY ?? 1;
-      texClone.repeat.set(rx, ry);
 
-      // Load normal map texture if available
-      let normalTexture: THREE.Texture | null = null;
-      if (option.normalMap) {
-        const nt = textureCache.current.get(option.normalMap);
-        if (nt) {
-          normalTexture = nt.clone();
-          normalTexture.repeat.set(rx, ry);
-          normalTexture.needsUpdate = true;
-        }
-      }
+      // ── Load texture FRESH (not clone) to avoid GPU sync issues ──
+      // The browser caches the image, so this is instant after first load.
+      const texLoader = new THREE.TextureLoader();
 
-      // Create a fresh textured material
+      // Create the material immediately with null map, then fill it in
       const newMaterial = new THREE.MeshStandardMaterial({
-        map: texClone,
+        map: null,
         color: 0xffffff,
-        normalMap: normalTexture,
+        normalMap: null,
         normalScale: new THREE.Vector2(
           option.normalScale ?? 1,
           option.normalScale ?? 1
@@ -239,6 +162,48 @@ function SofaModel() {
         depthWrite: true,
         side: THREE.DoubleSide,
       });
+
+      // Load the color texture
+      texLoader.load(
+        option.texture,
+        (tex) => {
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
+          tex.flipY = false;
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.repeat.set(rx, ry);
+          newMaterial.map = tex;
+          newMaterial.needsUpdate = true;
+        },
+        undefined,
+        (err) =>
+          console.error(
+            `[SofaModel] Color texture load failed: ${option.texture}`,
+            err
+          )
+      );
+
+      // Load the normal map if available
+      if (option.normalMap) {
+        texLoader.load(
+          option.normalMap,
+          (tex) => {
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.flipY = false;
+            tex.colorSpace = THREE.LinearSRGBColorSpace;
+            tex.repeat.set(rx, ry);
+            newMaterial.normalMap = tex;
+            newMaterial.needsUpdate = true;
+          },
+          undefined,
+          (err) =>
+            console.error(
+              `[SofaModel] Normal map load failed: ${option.normalMap}`,
+              err
+            )
+        );
+      }
 
       // Apply textured material to meshes WITH UVs
       let texturedCount = 0;
@@ -291,7 +256,7 @@ function SofaModel() {
 
       console.log(
         `[SofaModel] ✅ Applied "${option.name}": ${texturedCount} textured + ${solidCount} solid-color meshes` +
-          (normalTexture ? " (with normal map)" : "") +
+          (option.normalMap ? " (with normal map)" : "") +
           ` | repeat=(${rx}, ${ry})`
       );
     });
@@ -360,6 +325,7 @@ function SceneContent() {
 
       <CameraSetup />
 
+      {/* Lazy-loaded sofa model */}
       <Suspense fallback={<Loader />}>
         <SofaModel />
       </Suspense>
@@ -380,85 +346,8 @@ function SceneContent() {
   );
 }
 
-// ─── iOS AR via USDZ + AR Quick Look ───
-async function startIOSAR(
-  setArLoading: (v: boolean) => void
-): Promise<void> {
-  setArLoading(true);
-
-  try {
-    if (!loadedGltfScene) {
-      alert("Model is still loading. Please wait and try again.");
-      setArLoading(false);
-      return;
-    }
-
-    // Clone the sofa model with current materials
-    const cloned = loadedGltfScene.clone(true);
-
-    // Create a clean export scene with just the sofa + lighting
-    const exportScene = new THREE.Scene();
-    exportScene.add(new THREE.AmbientLight(0xffffff, 1.0));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
-    dirLight.position.set(5, 8, 5);
-    exportScene.add(dirLight);
-    exportScene.add(cloned);
-
-    // Center and normalize the model scale
-    const box = new THREE.Box3().setFromObject(cloned);
-    const center = box.getCenter(new THREE.Vector3());
-    cloned.position.sub(center);
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    if (maxDim > 0) {
-      const scale = 1 / maxDim;
-      cloned.scale.multiplyScalar(scale);
-    }
-
-    console.log("[AR iOS] Exporting scene to USDZ...");
-
-    const exporter = new USDZExporter();
-    const arraybuffer = await exporter.parse(exportScene);
-
-    console.log(
-      `[AR iOS] USDZ exported: ${(arraybuffer.byteLength / 1024 / 1024).toFixed(2)} MB`
-    );
-
-    // Create blob with correct MIME type for AR Quick Look
-    const blob = new Blob([arraybuffer], { type: "model/vnd.usdz+zip" });
-    const url = URL.createObjectURL(blob);
-
-    // Trigger AR Quick Look via <a rel="ar">
-    const a = document.createElement("a");
-    a.rel = "ar";
-    a.href = url;
-    const img = document.createElement("img");
-    img.src =
-      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-    img.style.visibility = "hidden";
-    img.style.width = "1px";
-    img.style.height = "1px";
-    a.appendChild(img);
-    document.body.appendChild(a);
-    a.click();
-
-    setTimeout(() => {
-      if (a.parentNode) document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 5000);
-
-    setArLoading(false);
-  } catch (e: any) {
-    console.error("[AR iOS] USDZ export failed:", e);
-    setArLoading(false);
-    alert(
-      `AR preparation failed: ${e.message || "Could not export model. Please try again."}`
-    );
-  }
-}
-
-// ─── Android AR via WebXR ───
-async function startAndroidAR(
+// ─── WebXR AR Session Manager (fallback for Firefox Android) ───
+async function startWebXRSession(
   setArActive: (v: boolean) => void
 ): Promise<void> {
   if (!navigator.xr) {
@@ -469,7 +358,9 @@ async function startAndroidAR(
   try {
     const supported = await navigator.xr.isSessionSupported("immersive-ar");
     if (!supported) {
-      alert("AR is not supported on this browser. Try Chrome on Android.");
+      alert(
+        "AR is not supported on this browser. Try Chrome on Android or Safari on iOS."
+      );
       return;
     }
 
@@ -480,6 +371,7 @@ async function startAndroidAR(
     });
     setArActive(true);
 
+    // Create a separate canvas for the AR session
     const arCanvas = document.createElement("canvas");
     document.body.appendChild(arCanvas);
     arCanvas.style.position = "fixed";
@@ -493,6 +385,7 @@ async function startAndroidAR(
       antialias: true,
       alpha: true,
     });
+    // Preserve drawing buffer for screenshots
     renderer.xr.enabled = true;
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -512,24 +405,25 @@ async function startAndroidAR(
     dirLight.position.set(5, 8, 5);
     scene.add(dirLight);
 
-    const arLoader = new GLTFLoader();
-    arLoader.setDRACOLoader(dracoLoader);
-    arLoader.setMeshoptDecoder(MeshoptDecoder);
-    const arGltf = await new Promise<any>((resolve, reject) => {
-      arLoader.load("/sofa.glb", resolve, undefined, reject);
-    });
+    // Clone the loaded scene for AR
+    if (!loadedGltfScene) {
+      alert("Model is still loading. Please wait and try again.");
+      session.end();
+      return;
+    }
 
-    const sofa = arGltf.scene;
+    const sofa = loadedGltfScene.clone(true);
     sofa.scale.set(0.5, 0.5, 0.5);
     sofa.visible = false;
     scene.add(sofa);
 
-    // Apply current material selection to AR sofa
+    // Apply current material selection
     const currentMaterials = useViewerStore.getState().selectedMaterials;
     Object.entries(currentMaterials).forEach(([, option]) => {
       if (!option) return;
+      const rx = option.repeatX ?? 1;
+      const ry = option.repeatY ?? 1;
 
-      // Textured material for meshes with UVs
       const newMat = new THREE.MeshStandardMaterial({
         map: null,
         color: 0xffffff,
@@ -537,21 +431,18 @@ async function startAndroidAR(
         metalness: option.metalness,
         side: THREE.DoubleSide,
       });
+
       const texLoader = new THREE.TextureLoader();
       texLoader.load(option.texture, (tex) => {
         tex.wrapS = THREE.RepeatWrapping;
         tex.wrapT = THREE.RepeatWrapping;
         tex.flipY = false;
         tex.colorSpace = THREE.SRGBColorSpace;
-        // Apply same repeat as main viewer
-        const rx = option.repeatX ?? 1;
-        const ry = option.repeatY ?? 1;
         tex.repeat.set(rx, ry);
         newMat.map = tex;
         newMat.needsUpdate = true;
       });
 
-      // Apply textured material to target meshes that have UVs
       option.targetMaterials.forEach((matName) => {
         sofa.traverse((child: any) => {
           if (child.isMesh && child.material?.name === matName) {
@@ -559,7 +450,6 @@ async function startAndroidAR(
             if (hasUVs) {
               child.material = newMat;
             } else {
-              // Fallback solid color for meshes without UVs
               child.material = new THREE.MeshStandardMaterial({
                 color: option.solidColor
                   ? parseInt(option.solidColor, 16)
@@ -573,7 +463,6 @@ async function startAndroidAR(
         });
       });
 
-      // Apply solid color to meshes without UVs
       if (option.solidColorTargets && option.solidColorTargets.length > 0) {
         const solidMat = new THREE.MeshStandardMaterial({
           color: option.solidColor
@@ -593,6 +482,7 @@ async function startAndroidAR(
       }
     });
 
+    // Hit-test reticle
     const reticleGeom = new THREE.RingGeometry(0.1, 0.12, 32);
     reticleGeom.rotateX(-Math.PI / 2);
     const reticle = new THREE.Mesh(
@@ -615,9 +505,7 @@ async function startAndroidAR(
         space: viewerSpace,
       });
     } catch {
-      console.warn(
-        "[AR] Hit test not available, sofa will be placed in front of camera"
-      );
+      console.warn("[WebXR AR] Hit test not available");
     }
 
     const refSpace = await session.requestReferenceSpace("local");
@@ -675,45 +563,13 @@ async function startAndroidAR(
       renderer.render(scene, camera);
     });
   } catch (e: any) {
-    console.error("[AR Android] Failed:", e);
+    console.error("[WebXR AR] Failed:", e);
     setArActive(false);
-    alert(
-      `AR Error: ${e.message || "Could not start AR. Use Chrome on Android."}`
-    );
+    alert(`AR Error: ${e.message}`);
   }
 }
 
-// ─── AR Loading Overlay (iOS USDZ export) ───
-function ARLoadingOverlay({ loading }: { loading: boolean }) {
-  if (!loading) return null;
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white/10 backdrop-blur-xl border border-white/20">
-        <svg
-          className="animate-spin text-emerald-400"
-          width="40"
-          height="40"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          <path d="M21 12a9 9 0 11-6.219-8.56" />
-        </svg>
-        <div className="text-center">
-          <p className="text-white font-semibold text-sm">
-            Preparing AR Experience
-          </p>
-          <p className="text-white/60 text-xs mt-1">
-            Exporting 3D model for AR Quick Look...
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── AR Overlay (Android WebXR) ───
+// ─── AR Overlay (WebXR session UI) ───
 function AROverlay({ arActive }: { arActive: boolean }) {
   if (!arActive) return null;
   return (
@@ -733,108 +589,18 @@ function AROverlay({ arActive }: { arActive: boolean }) {
   );
 }
 
-// ─── Mobile AR Button ───
-function MobileARButton({
-  arLoading,
-  onAR,
-}: {
-  arLoading: boolean;
-  onAR: () => void;
-}) {
-  return (
-    <button
-      onClick={onAR}
-      disabled={arLoading}
-      className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2.5 rounded-full backdrop-blur-md transition-all duration-200 hover:scale-105 cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-      style={{
-        background: "rgba(16, 185, 129, 0.15)",
-        border: "1px solid rgba(16, 185, 129, 0.3)",
-        color: "var(--viewer-text)",
-      }}
-    >
-      {arLoading ? (
-        <>
-          <svg
-            className="animate-spin"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="M21 12a9 9 0 11-6.219-8.56" />
-          </svg>
-          <span className="text-xs font-bold tracking-wider">
-            PREPARING AR...
-          </span>
-        </>
-      ) : (
-        <>
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-            <circle cx="12" cy="12" r="3" />
-          </svg>
-          <span className="text-xs font-bold tracking-wider">VIEW IN AR</span>
-        </>
-      )}
-    </button>
-  );
-}
-
 // ─── Main Scene Export ───
 export default function Scene() {
   const isDark = useViewerStore((s) => s.isDark);
   const bgColor = isDark ? "#212425" : "#f2f2f2";
   const [arActive, setArActive] = useState(false);
-  const [arLoading, setArLoading] = useState(false);
-  const [isMobileDevice] = useState(isMobile);
 
-  // Central AR handler — routes to iOS or Android AR
-  const handleAR = useCallback(async () => {
-    if (arLoading) return;
-
-    if (isIOS()) {
-      await startIOSAR(setArLoading);
-    } else if (navigator.xr) {
-      const supported = await navigator.xr.isSessionSupported("immersive-ar");
-      if (supported) {
-        await startAndroidAR(setArActive);
-      } else {
-        alert(
-          "AR is not supported on this browser. Please use Chrome on Android or Safari on iOS."
-        );
-      }
-    } else if (isMobile()) {
-      if (isIOS()) {
-        await startIOSAR(setArLoading);
-      } else {
-        alert(
-          "AR is not supported on this browser. Please try Chrome on Android."
-        );
-      }
-    } else {
-      alert(
-        "AR requires a mobile device. Please open this page on your phone — Safari on iOS or Chrome on Android."
-      );
-    }
-  }, [arLoading, setArActive]);
-
-  // Listen for AR requests from help panel
+  // Listen for WebXR AR requests (fallback for Firefox Android)
   useEffect(() => {
-    const handler = () => handleAR();
-    window.addEventListener("enter-ar", handler);
-    return () => window.removeEventListener("enter-ar", handler);
-  }, [handleAR]);
+    const handler = () => startWebXRSession(setArActive);
+    window.addEventListener("enter-webxr-ar", handler);
+    return () => window.removeEventListener("enter-webxr-ar", handler);
+  }, []);
 
   return (
     <>
@@ -851,21 +617,15 @@ export default function Scene() {
           antialias: true,
           toneMapping: THREE.ACESFilmicToneMapping,
           toneMappingExposure: 2.5,
+          // Preserve drawing buffer for screenshots
+          preserveDrawingBuffer: true,
         }}
       >
         <SceneContent />
       </Canvas>
 
-      {/* AR overlay shown during Android WebXR AR session */}
+      {/* WebXR AR overlay */}
       <AROverlay arActive={arActive} />
-
-      {/* AR loading overlay for iOS USDZ export */}
-      <ARLoadingOverlay loading={arLoading} />
-
-      {/* AR button for mobile devices */}
-      {isMobileDevice && (
-        <MobileARButton arLoading={arLoading} onAR={handleAR} />
-      )}
     </>
   );
 }
